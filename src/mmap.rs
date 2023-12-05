@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::address::Address;
-use crate::bitmap::{Bitmap, BS};
+use crate::bitmap::Bitmap;
 use crate::guest_memory::{
     self, FileOffset, GuestAddress, GuestMemory, GuestMemoryIterator, GuestMemoryRegion,
     GuestUsize, MemoryRegionAddress,
@@ -440,7 +440,7 @@ impl<B: Bitmap> Bytes<MemoryRegionAddress> for GuestRegionMmap<B> {
     }
 }
 
-impl<B: Bitmap> GuestMemoryRegion for GuestRegionMmap<B> {
+impl<'memory, B: Bitmap> GuestMemoryRegion<'memory> for GuestRegionMmap<B> {
     type B = B;
 
     fn len(&self) -> GuestUsize {
@@ -475,7 +475,7 @@ impl<B: Bitmap> GuestMemoryRegion for GuestRegionMmap<B> {
         &self,
         offset: MemoryRegionAddress,
         count: usize,
-    ) -> guest_memory::Result<VolatileSlice<BS<B>>> {
+    ) -> guest_memory::Result<VolatileSlice<'memory, B::S<'memory>>> {
         let slice = self.mapping.get_slice(offset.raw_value() as usize, count)?;
         Ok(slice)
     }
@@ -630,10 +630,10 @@ impl<'a, B: 'a> GuestMemoryIterator<'a, GuestRegionMmap<B>> for GuestMemoryMmap<
     type Iter = Iter<'a, B>;
 }
 
-impl<B: Bitmap + 'static> GuestMemory for GuestMemoryMmap<B> {
-    type R = GuestRegionMmap<B>;
+impl<B: Bitmap> GuestMemory for GuestMemoryMmap<B> {
+    type R<'memory> = GuestRegionMmap<B> where Self: 'memory, B: 'memory;
 
-    type I = Self;
+    type I<'memory> = Self where Self: 'memory;
 
     fn num_regions(&self) -> usize {
         self.regions.len()
@@ -657,8 +657,6 @@ impl<B: Bitmap + 'static> GuestMemory for GuestMemoryMmap<B> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
-    extern crate vmm_sys_util;
-
     use super::*;
 
     use crate::bitmap::tests::test_guest_memory_and_region;

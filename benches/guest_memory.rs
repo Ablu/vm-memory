@@ -17,7 +17,7 @@ pub fn benchmark_for_guest_memory(c: &mut Criterion) {
 
 fn find_region<B>(mem: &GuestMemoryMmap<B>)
 where
-    B: Bitmap + 'static,
+    B: Bitmap,
 {
     for i in 0..REGIONS_COUNT {
         let _ = mem

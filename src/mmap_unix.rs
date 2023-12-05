@@ -15,7 +15,7 @@ use std::os::unix::io::AsRawFd;
 use std::ptr::null_mut;
 use std::result;
 
-use crate::bitmap::{Bitmap, BS};
+use crate::bitmap::Bitmap;
 use crate::guest_memory::FileOffset;
 use crate::mmap::{check_file_offset, NewBitmap};
 use crate::volatile_memory::{self, VolatileMemory, VolatileSlice};
@@ -392,7 +392,7 @@ impl<B: Bitmap> MmapRegion<B> {
     }
 }
 
-impl<B: Bitmap> VolatileMemory for MmapRegion<B> {
+impl<'memory, B: Bitmap> VolatileMemory<'memory> for MmapRegion<B> {
     type B = B;
 
     fn len(&self) -> usize {
@@ -403,14 +403,14 @@ impl<B: Bitmap> VolatileMemory for MmapRegion<B> {
         &self,
         offset: usize,
         count: usize,
-    ) -> volatile_memory::Result<VolatileSlice<BS<B>>> {
+    ) -> volatile_memory::Result<VolatileSlice<'memory, B::S<'memory>>> {
         let _ = self.compute_end_offset(offset, count)?;
 
         Ok(
             // SAFETY: Safe because we checked that offset + count was within our range and we only
             // ever hand out volatile accessors.
             unsafe {
-                VolatileSlice::with_bitmap(
+                VolatileSlice::<'memory>::with_bitmap(
                     self.addr.add(offset),
                     count,
                     self.bitmap.slice_at(offset),

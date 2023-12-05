@@ -34,7 +34,7 @@ use std::sync::atomic::Ordering;
 use std::usize;
 
 use crate::atomic_integer::AtomicInteger;
-use crate::bitmap::{Bitmap, BitmapSlice, BS};
+use crate::bitmap::{Bitmap, BitmapSlice};
 use crate::{AtomicAccess, ByteValued, Bytes};
 
 #[cfg(all(feature = "backend-mmap", feature = "xen", unix))]
@@ -96,7 +96,7 @@ pub fn compute_offset(base: usize, offset: usize) -> Result<usize> {
 }
 
 /// Types that support raw volatile access to their data.
-pub trait VolatileMemory {
+pub trait VolatileMemory<'memory> {
     /// Type used for dirty memory tracking.
     type B: Bitmap;
 
@@ -114,15 +114,22 @@ pub trait VolatileMemory {
     /// Note that the property `get_slice(offset, count).len() == count` MUST NOT be
     /// relied on for the correctness of unsafe code. This is a safe function inside of a
     /// safe trait, and implementors are under no obligation to follow its documentation.
-    fn get_slice(&self, offset: usize, count: usize) -> Result<VolatileSlice<BS<Self::B>>>;
+    fn get_slice(
+        &self,
+        offset: usize,
+        count: usize,
+    ) -> Result<VolatileSlice<'memory, <Self::B as Bitmap>::S<'memory>>>;
 
     /// Gets a slice of memory for the entire region that supports volatile access.
-    fn as_volatile_slice(&self) -> VolatileSlice<BS<Self::B>> {
+    fn as_volatile_slice(&self) -> VolatileSlice<'memory, <Self::B as Bitmap>::S<'memory>> {
         self.get_slice(0, self.len()).unwrap()
     }
 
     /// Gets a `VolatileRef` at `offset`.
-    fn get_ref<T: ByteValued>(&self, offset: usize) -> Result<VolatileRef<T, BS<Self::B>>> {
+    fn get_ref<T: ByteValued>(
+        &self,
+        offset: usize,
+    ) -> Result<VolatileRef<'memory, T, <Self::B as Bitmap>::S<'memory>>> {
         let slice = self.get_slice(offset, size_of::<T>())?;
 
         assert_eq!(
@@ -151,7 +158,7 @@ pub trait VolatileMemory {
         &self,
         offset: usize,
         n: usize,
-    ) -> Result<VolatileArrayRef<T, BS<Self::B>>> {
+    ) -> Result<VolatileArrayRef<'memory, T, <Self::B as Bitmap>::S<'memory>>> {
         // Use isize to avoid problems with ptr::offset and ptr::add down the line.
         let nbytes = isize::try_from(n)
             .ok()
@@ -993,14 +1000,14 @@ impl<B: BitmapSlice> Bytes<usize> for VolatileSlice<'_, B> {
     }
 }
 
-impl<B: BitmapSlice> VolatileMemory for VolatileSlice<'_, B> {
+impl<'memory, B: BitmapSlice> VolatileMemory<'memory> for VolatileSlice<'memory, B> {
     type B = B;
 
     fn len(&self) -> usize {
         self.size
     }
 
-    fn get_slice(&self, offset: usize, count: usize) -> Result<VolatileSlice<B>> {
+    fn get_slice(&self, offset: usize, count: usize) -> Result<VolatileSlice<'memory, B>> {
         let _ = self.compute_end_offset(offset, count)?;
         Ok(
             // SAFETY: This is safe because the pointer is range-checked by compute_end_offset, and

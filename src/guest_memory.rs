@@ -50,7 +50,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::address::{Address, AddressValue};
-use crate::bitmap::{Bitmap, BS, MS};
+use crate::bitmap::{Bitmap, MS};
 use crate::bytes::{AtomicAccess, Bytes};
 use crate::io::{ReadVolatile, WriteVolatile};
 use crate::volatile_memory::{self, VolatileSlice};
@@ -163,7 +163,7 @@ impl FileOffset {
 
 /// Represents a continuous region of guest physical memory.
 #[allow(clippy::len_without_is_empty)]
-pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
+pub trait GuestMemoryRegion<'memory>: Bytes<MemoryRegionAddress, E = Error> {
     /// Type used for dirty memory tracking.
     type B: Bitmap;
 
@@ -268,7 +268,7 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
         &self,
         offset: MemoryRegionAddress,
         count: usize,
-    ) -> Result<VolatileSlice<BS<Self::B>>> {
+    ) -> Result<VolatileSlice<'memory, <Self::B as Bitmap>::S<'memory>>> {
         Err(Error::HostAddressNotAvailable)
     }
 
@@ -296,7 +296,7 @@ pub trait GuestMemoryRegion: Bytes<MemoryRegionAddress, E = Error> {
     /// assert_eq!(r.load(), v);
     /// # }
     /// ```
-    fn as_volatile_slice(&self) -> Result<VolatileSlice<BS<Self::B>>> {
+    fn as_volatile_slice(&self) -> Result<VolatileSlice<'memory, <Self::B as Bitmap>::S<'memory>>> {
         self.get_slice(MemoryRegionAddress(0), self.len() as usize)
     }
 
@@ -469,44 +469,20 @@ pub trait GuestMemoryIterator<'a, R: 'a> {
 /// - handle cases where an access request spanning two or more `GuestMemoryRegion` objects.
 pub trait GuestMemory {
     /// Type of objects hosted by the address space.
-    type R: GuestMemoryRegion;
+    type R<'memory>: GuestMemoryRegion<'memory>
+    where
+        Self: 'memory;
 
     /// Lifetime generic associated iterators. Usually this is just `Self`.
-    type I: for<'a> GuestMemoryIterator<'a, Self::R>;
+    type I<'memory>: GuestMemoryIterator<'memory, Self::R<'memory>>
+    where
+        Self: 'memory;
 
     /// Returns the number of regions in the collection.
     fn num_regions(&self) -> usize;
 
     /// Returns the region containing the specified address or `None`.
-    fn find_region(&self, addr: GuestAddress) -> Option<&Self::R>;
-
-    /// Perform the specified action on each region.
-    ///
-    /// It only walks children of current region and does not step into sub regions.
-    #[deprecated(since = "0.6.0", note = "Use `.iter()` instead")]
-    fn with_regions<F, E>(&self, cb: F) -> std::result::Result<(), E>
-    where
-        F: Fn(usize, &Self::R) -> std::result::Result<(), E>,
-    {
-        for (index, region) in self.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
-
-    /// Perform the specified action on each region mutably.
-    ///
-    /// It only walks children of current region and does not step into sub regions.
-    #[deprecated(since = "0.6.0", note = "Use `.iter()` instead")]
-    fn with_regions_mut<F, E>(&self, mut cb: F) -> std::result::Result<(), E>
-    where
-        F: FnMut(usize, &Self::R) -> std::result::Result<(), E>,
-    {
-        for (index, region) in self.iter().enumerate() {
-            cb(index, region)?;
-        }
-        Ok(())
-    }
+    fn find_region(&self, addr: GuestAddress) -> Option<&Self::R<'_>>;
 
     /// Gets an iterator over the entries in the collection.
     ///
@@ -533,47 +509,7 @@ pub trait GuestMemory {
     /// assert_eq!(3, total_size)
     /// # }
     /// ```
-    fn iter(&self) -> <Self::I as GuestMemoryIterator<Self::R>>::Iter;
-
-    /// Applies two functions, specified as callbacks, on the inner memory regions.
-    ///
-    /// # Arguments
-    /// * `init` - Starting value of the accumulator for the `foldf` function.
-    /// * `mapf` - "Map" function, applied to all the inner memory regions. It returns an array of
-    ///            the same size as the memory regions array, containing the function's results
-    ///            for each region.
-    /// * `foldf` - "Fold" function, applied to the array returned by `mapf`. It acts as an
-    ///             operator, applying itself to the `init` value and to each subsequent elemnent
-    ///             in the array returned by `mapf`.
-    ///
-    /// # Examples
-    ///
-    /// * Compute the total size of all memory mappings in KB by iterating over the memory regions
-    ///   and dividing their sizes to 1024, then summing up the values in an accumulator. (uses the
-    ///  `backend-mmap` feature)
-    ///
-    /// ```
-    /// # #[cfg(feature = "backend-mmap")]
-    /// # {
-    /// # use vm_memory::{GuestAddress, GuestMemory, GuestMemoryRegion, GuestMemoryMmap};
-    /// #
-    /// let start_addr1 = GuestAddress(0x0);
-    /// let start_addr2 = GuestAddress(0x400);
-    /// let gm = GuestMemoryMmap::<()>::from_ranges(&vec![(start_addr1, 1024), (start_addr2, 2048)])
-    ///     .expect("Could not create guest memory");
-    ///
-    /// let total_size = gm.map_and_fold(0, |(_, region)| region.len() / 1024, |acc, size| acc + size);
-    /// assert_eq!(3, total_size)
-    /// # }
-    /// ```
-    #[deprecated(since = "0.6.0", note = "Use `.iter()` instead")]
-    fn map_and_fold<F, G, T>(&self, init: T, mapf: F, foldf: G) -> T
-    where
-        F: Fn((usize, &Self::R)) -> T,
-        G: Fn(T, T) -> T,
-    {
-        self.iter().enumerate().map(mapf).fold(init, foldf)
-    }
+    fn iter(&self) -> <Self::I<'_> as GuestMemoryIterator<Self::R<'_>>>::Iter;
 
     /// Returns the maximum (inclusive) address managed by the
     /// [`GuestMemory`](trait.GuestMemory.html).
@@ -601,7 +537,7 @@ pub trait GuestMemory {
     /// Tries to convert an absolute address to a relative address within the corresponding region.
     ///
     /// Returns `None` if `addr` isn't present within the memory of the guest.
-    fn to_region_addr(&self, addr: GuestAddress) -> Option<(&Self::R, MemoryRegionAddress)> {
+    fn to_region_addr(&self, addr: GuestAddress) -> Option<(&Self::R<'_>, MemoryRegionAddress)> {
         self.find_region(addr)
             .map(|r| (r, r.to_region_addr(addr).unwrap()))
     }
@@ -641,7 +577,7 @@ pub trait GuestMemory {
     /// - the size of the already handled data when the whole range has been handled
     fn try_access<F>(&self, count: usize, addr: GuestAddress, mut f: F) -> Result<usize>
     where
-        F: FnMut(usize, usize, MemoryRegionAddress, &Self::R) -> Result<usize>,
+        F: FnMut(usize, usize, MemoryRegionAddress, &Self::R<'_>) -> Result<usize>,
     {
         let mut cur = addr;
         let mut total = 0;
